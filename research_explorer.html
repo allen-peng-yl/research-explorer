@@ -122,6 +122,18 @@ summary{font-size:12px;color:var(--text3);cursor:pointer;}
 .pm-link{font-size:12px;color:var(--text3);text-decoration:none;margin-left:auto;padding:5px 0;}
 .pm-link:hover{color:var(--text2);}.empty{text-align:center;padding:3.5rem 1rem;color:var(--text3);font-size:14px;line-height:1.7;}
 
+/* Modal */
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:1000;display:flex;align-items:center;justify-content:center;padding:1rem;}
+.modal-box{background:var(--bg);border-radius:16px;padding:1.75rem 1.5rem 1.5rem;max-width:320px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,0.18);text-align:center;}
+.modal-icon{font-size:36px;margin-bottom:0.75rem;}
+.modal-title{font-size:15px;font-weight:700;color:var(--text);margin-bottom:6px;}
+.modal-body{font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:1.25rem;}
+.modal-btns{display:flex;gap:8px;justify-content:center;}
+.modal-btn-cancel{padding:8px 20px;font-size:13px;font-weight:600;border-radius:var(--radius-sm);cursor:pointer;background:var(--bg2);color:var(--text2);border:0.5px solid var(--border2);font-family:var(--font);}
+.modal-btn-cancel:hover{background:var(--bg3);}
+.modal-btn-confirm{padding:8px 20px;font-size:13px;font-weight:600;border-radius:var(--radius-sm);cursor:pointer;background:#E24B4A;color:#fff;border:none;font-family:var(--font);}
+.modal-btn-confirm:hover{opacity:0.85;}
+
 /* Sidebar */
 .sidebar h2{font-size:13px;font-weight:600;color:var(--text2);margin-bottom:1rem;}
 .stat-block{margin-bottom:1.5rem;}
@@ -223,6 +235,30 @@ summary{font-size:12px;color:var(--text3);cursor:pointer;}
 
 </div>
 
+<!-- Reset Modal -->
+<div class="modal-backdrop" id="resetModal1" style="display:none;">
+  <div class="modal-box">
+    <div class="modal-icon">🗑️</div>
+    <div class="modal-title">Delete everything?</div>
+    <div class="modal-body">All your articles, notes, and tags will be gone forever. No take-backs!</div>
+    <div class="modal-btns">
+      <button class="modal-btn-cancel" onclick="closeModal('resetModal1')">Never mind</button>
+      <button class="modal-btn-confirm" onclick="showModal2()">Yes, delete</button>
+    </div>
+  </div>
+</div>
+<div class="modal-backdrop" id="resetModal2" style="display:none;">
+  <div class="modal-box">
+    <div class="modal-icon">😬</div>
+    <div class="modal-title">Last chance!</div>
+    <div class="modal-body">Seriously though — this will permanently delete all your data. You sure?</div>
+    <div class="modal-btns">
+      <button class="modal-btn-cancel" onclick="closeModal('resetModal2')">Wait, no</button>
+      <button class="modal-btn-confirm" onclick="confirmReset()">Yep, wipe it</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const METHODS=[
   {id:'rwe',label:'Real-world evidence',
@@ -285,9 +321,11 @@ function copySessionId(){
     setStatus('Session ID copied!',false,true);
   });
 }
-async function resetAllData(){
-  if(!confirm('確定要刪除所有文章和紀錄嗎？這個動作無法復原。'))return;
-  if(!confirm('再次確認：所有資料將永久刪除。'))return;
+function resetAllData(){document.getElementById('resetModal1').style.display='flex';}
+function closeModal(id){document.getElementById(id).style.display='none';}
+function showModal2(){closeModal('resetModal1');document.getElementById('resetModal2').style.display='flex';}
+async function confirmReset(){
+  closeModal('resetModal2');
   const sid=getSessionId();
   try{await sb.from('sessions').delete().eq('session_id',sid);}catch(e){}
   localStorage.removeItem('phsr_v9');
