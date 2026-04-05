@@ -145,6 +145,7 @@ summary{font-size:12px;color:var(--text3);cursor:pointer;}
   <div style="margin-bottom:1.5rem;">
     <h1>Research explorer</h1>
     <p class="subtitle">Pharmacoepidemiology · Real-world evidence · UMaryland PHSR</p>
+    <p class="subtitle" style="margin-top:2px;">Allen Peng</p>
   </div>
 
   <div class="section-label">Method</div>
@@ -191,6 +192,9 @@ summary{font-size:12px;color:var(--text3);cursor:pointer;}
     <div class="api-key-row">
       <input class="api-key-input" type="text" id="sessionIdInput" placeholder="Paste Session ID here..."/>
       <button class="btn-sm" onclick="switchSession()">Switch</button>
+    </div>
+    <div style="margin-top:14px;border-top:0.5px solid var(--border);padding-top:12px;">
+      <button class="btn-sm" style="background:#E24B4A;border:none;color:#fff;" onclick="resetAllData()">Reset — delete all articles</button>
     </div>
   </details>
 
@@ -281,6 +285,18 @@ function copySessionId(){
     setStatus('Session ID copied!',false,true);
   });
 }
+async function resetAllData(){
+  if(!confirm('確定要刪除所有文章和紀錄嗎？這個動作無法復原。'))return;
+  if(!confirm('再次確認：所有資料將永久刪除。'))return;
+  const sid=getSessionId();
+  try{await sb.from('sessions').delete().eq('session_id',sid);}catch(e){}
+  localStorage.removeItem('phsr_v9');
+  localStorage.removeItem('phsr_log');
+  articles=[];searchLog=[];
+  updateCounts();renderList();renderSearchLog();renderSidebar();
+  setStatus('All data deleted.',false,true);
+}
+
 async function switchSession(){
   const val=document.getElementById('sessionIdInput').value.trim();
   if(!val){return;}
