@@ -730,7 +730,8 @@ function setArticleStatus(pmid,s,fromStatus){
   }
   if(s==='read'&&fromStatus==='interested') launchConfetti();
   const a=articles.find(x=>x.pmid===pmid);if(!a)return;
-  a.status=s;save();updateCounts();renderList();renderSidebar();
+  a.status=s;a.statusAt=Date.now();
+  save();updateCounts();renderList();renderSidebar();
   scrollToListTop();
 }
 
@@ -796,6 +797,11 @@ function renderDrugTagsHtml(a){
 function renderList(){
   const list=document.getElementById('list');
   const shown=articles.filter(a=>a.status===currentTab);
+  // Unread stays in import order (newest article first) — it is the reading queue.
+  // The other tabs are sorted most-recently-marked first, so whatever you just
+  // clicked is at the top, including a misclick you need to undo. Sort is stable,
+  // so articles marked before statusAt existed keep their original import order.
+  if(currentTab!=='unread')shown.sort((x,y)=>(y.statusAt||0)-(x.statusAt||0));
   if(!shown.length){
     const msgs={
       unread:'No unread articles yet.<br>Select a method and disease area above, then click <strong>Import 20 from PubMed</strong>.',
