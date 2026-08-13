@@ -52,6 +52,8 @@ h1{font-size:22px;font-weight:600;}
 .dot-red{background:#E24B4A;animation:none;}
 @keyframes pulse{0%,100%{opacity:0.25}50%{opacity:1}}
 .error-box{background:#FCEBEB;border:0.5px solid #F09595;border-radius:var(--radius-sm);padding:12px 16px;font-size:13px;color:#501313;margin-top:10px;line-height:1.7;display:none;}
+.sync-warn{background:#FDF3E3;border:0.5px solid #E8C48A;border-radius:var(--radius-sm);padding:10px 14px;font-size:13px;color:#5A3E12;margin-top:10px;line-height:1.6;}
+.sync-warn.ok{background:#EAF6EC;border-color:#9DD0A8;color:#1E4527;}
 details{margin-top:12px;}
 summary{font-size:12px;color:var(--text3);cursor:pointer;}
 .api-key-row{display:flex;gap:8px;align-items:center;margin-top:8px;}
@@ -179,6 +181,7 @@ summary{font-size:12px;color:var(--text3);cursor:pointer;}
     2. Use Chrome or Firefox.<br>
     3. Add a free NCBI API key below.
   </div>
+  <div class="sync-warn" id="syncWarn" style="display:none;"></div>
 
   <details>
     <summary>Optional: NCBI API key (free — helps bypass network restrictions)</summary>
@@ -204,6 +207,16 @@ summary{font-size:12px;color:var(--text3);cursor:pointer;}
     <div class="api-key-row">
       <input class="api-key-input" type="text" id="sessionIdInput" placeholder="Paste Session ID here..."/>
       <button class="btn-sm" onclick="switchSession()">Switch</button>
+    </div>
+    <div style="margin-top:14px;border-top:0.5px solid var(--border);padding-top:12px;">
+      <div style="font-size:12px;color:var(--text3);margin-bottom:8px;line-height:1.6;">
+        Backup — Export downloads everything as a JSON file. Import adds any articles from that file that are missing here (it never overwrites or deletes what you already have).
+      </div>
+      <div class="api-key-row">
+        <button class="btn-sm" onclick="exportBackup()">Export backup</button>
+        <button class="btn-sm" onclick="document.getElementById('importFile').click()">Import backup</button>
+        <input type="file" id="importFile" accept="application/json,.json" style="display:none;" onchange="importBackup(this)"/>
+      </div>
     </div>
     <div style="margin-top:14px;border-top:0.5px solid var(--border);padding-top:12px;">
       <button class="btn-sm" style="background:#E24B4A;border:none;color:#fff;" onclick="resetAllData()">Reset — delete all articles</button>
@@ -338,14 +351,22 @@ async function confirmReset(){
 async function switchSession(){
   const val=document.getElementById('sessionIdInput').value.trim();
   if(!val){return;}
-  if(!confirm('Switch to session "'+val.slice(0,8)+'..."? Your current data on this device will be replaced.'))return;
+  if(!confirm('Switch to session "'+val.slice(0,8)+'..."? Your current data on this device will be replaced.\n\nExport a backup first if you have not already.'))return;
+  const prev=getSessionId();
   localStorage.setItem('phsr_session_id',val);
-  document.getElementById('sessionIdInput').value='';
   setStatus('Switching session...',true);
-  await loadSaved();
+  // If the target session cannot be read, roll back — otherwise the next save would
+  // push this device's articles into the session we failed to load.
+  if(!await loadSaved(true)){
+    localStorage.setItem('phsr_session_id',prev);
+    setStatus('Could not reach the cloud — stayed on your current session. Nothing changed.');
+    return;
+  }
+  document.getElementById('sessionIdInput').value='';
+  writeLocal();
   updateCounts();renderList();renderSearchLog();renderSidebar();
   document.getElementById('sessionIdDisplay').value=val;
-  setStatus('Switched! Data loaded.',false,true);
+  setStatus('Switched! Loaded '+articles.length+' articles.',false,true);
 }
 
 const DRUG_FILTER='("Drug Therapy"[mesh] OR "drug"[tiab] OR "medication"[tiab] OR "pharmacotherapy"[tiab] OR "treatment"[tiab] OR "therapeutics"[tiab] OR "prescri"[tiab])';
@@ -359,32 +380,132 @@ const TARGET=20;
 
 let activeMethod=null,activeDisease=null,currentTab='unread';
 let articles=[],searchLog=[];
+let cloudOk=true;      // false once a Supabase read/write has failed
+let loadNotice=null;   // [html, isOk] shown by the sync banner after the initial load
 
-async function loadSaved(){
+function setSyncWarn(msg,ok=false){
+  const el=document.getElementById('syncWarn');
+  if(!msg){el.style.display='none';return;}
+  el.innerHTML=msg;
+  el.className=ok?'sync-warn ok':'sync-warn';
+  el.style.display='block';
+}
+
+function readLocal(){
+  let a=[],l=[];
+  try{const s=localStorage.getItem('phsr_v9');if(s)a=JSON.parse(s)||[];}catch(e){}
+  try{const g=localStorage.getItem('phsr_log');if(g)l=JSON.parse(g)||[];}catch(e){}
+  return{articles:Array.isArray(a)?a:[],log:Array.isArray(l)?l:[]};
+}
+function writeLocal(){
+  try{localStorage.setItem('phsr_v9',JSON.stringify(articles));}catch(e){}
+  try{localStorage.setItem('phsr_log',JSON.stringify(searchLog));}catch(e){}
+}
+
+// Pushes the in-memory state to Supabase. Unlike the old silent upsert, a failure
+// is reported — otherwise the app looks like it is syncing when it is not.
+async function pushCloud(){
   const sid=getSessionId();
   try{
-    const {data,error}=await sb.from('sessions').select('data,log').eq('session_id',sid).maybeSingle();
-    if(data){
-      if(data.data)articles=data.data;
-      if(data.log)searchLog=data.log;
-      try{localStorage.setItem('phsr_v9',JSON.stringify(articles));}catch(e){}
-      try{localStorage.setItem('phsr_log',JSON.stringify(searchLog));}catch(e){}
-      return;
-    }
-  }catch(e){}
-  // fallback to localStorage
-  try{const s=localStorage.getItem('phsr_v9');if(s)articles=JSON.parse(s);}catch(e){}
-  try{const l=localStorage.getItem('phsr_log');if(l)searchLog=JSON.parse(l);}catch(e){}
+    const {error}=await sb.from('sessions').upsert({session_id:sid,data:articles,log:searchLog,updated_at:new Date().toISOString()});
+    if(error)throw error;
+    if(!cloudOk){cloudOk=true;setSyncWarn('Cloud sync is back. Everything on this device has been uploaded.',true);}
+    else setSyncWarn('');
+    return true;
+  }catch(e){
+    cloudOk=false;
+    setSyncWarn('<strong>Cloud sync failed.</strong> Your work is saved on this device only — it will not appear on your other devices, and clearing this browser would lose it. Use <em>Export backup</em> under “Sync across devices” to keep a copy.');
+    return false;
+  }
 }
-async function save(){
-  try{localStorage.setItem('phsr_v9',JSON.stringify(articles));}catch(e){}
+
+// fresh=true means "this is a deliberate switch to another session" — localStorage
+// still holds the *previous* session's articles, so it must not be merged or compared.
+async function loadSaved(fresh=false){
   const sid=getSessionId();
-  try{await sb.from('sessions').upsert({session_id:sid,data:articles,log:searchLog,updated_at:new Date().toISOString()});}catch(e){}
+  const local=fresh?{articles:[],log:[]}:readLocal();
+  let cloud=null;
+  try{
+    const {data,error}=await sb.from('sessions').select('data,log').eq('session_id',sid).maybeSingle();
+    if(error)throw error;
+    cloud=data;
+  }catch(e){
+    // Cloud unreachable (paused project, offline, blocked network). Never let this
+    // clobber what is on the device — local is the only copy left.
+    cloudOk=false;
+    if(fresh)return false;
+    articles=local.articles;searchLog=local.log;
+    loadNotice=['<strong>Cloud unreachable.</strong> Showing this device’s '+articles.length+' articles. Changes will save here but will NOT sync until the connection is back.',false];
+    return false;
+  }
+  cloudOk=true;
+  const cloudArticles=Array.isArray(cloud&&cloud.data)?cloud.data:[];
+  const cloudLog=Array.isArray(cloud&&cloud.log)?cloud.log:[];
+
+  // Articles are only ever added, never removed, so a smaller cloud copy means the
+  // cloud row is stale or empty (e.g. the project was paused while this device kept
+  // working). Keep the fuller local copy and push it back up instead of overwriting.
+  if(!fresh&&cloudArticles.length<local.articles.length){
+    articles=local.articles;
+    searchLog=cloudLog.length>local.log.length?cloudLog:local.log;
+    writeLocal();
+    const pushed=await pushCloud();
+    if(pushed)loadNotice=['Kept this device’s '+articles.length+' articles (the cloud copy only had '+cloudArticles.length+') and re-uploaded them.',true];
+    return true;
+  }
+
+  articles=cloudArticles;searchLog=cloudLog;
+  writeLocal();
+  return true;
+}
+
+async function save(){
+  writeLocal();
+  await pushCloud();
 }
 async function saveLog(){
-  try{localStorage.setItem('phsr_log',JSON.stringify(searchLog));}catch(e){}
-  const sid=getSessionId();
-  try{await sb.from('sessions').upsert({session_id:sid,data:articles,log:searchLog,updated_at:new Date().toISOString()});}catch(e){}
+  writeLocal();
+  await pushCloud();
+}
+
+function exportBackup(){
+  const payload={exportedAt:new Date().toISOString(),sessionId:getSessionId(),phsr_v9:JSON.stringify(articles),phsr_log:JSON.stringify(searchLog)};
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
+  a.download='research_explorer_backup_'+new Date().toISOString().slice(0,10)+'.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus('Backup downloaded — '+articles.length+' articles.',false,true);
+}
+
+function parseBackup(raw){
+  const j=JSON.parse(raw);
+  // Accepts both the in-app export and a raw localStorage dump; each field may be
+  // a JSON string or an already-parsed array.
+  const pick=v=>{if(!v)return[];const p=typeof v==='string'?JSON.parse(v):v;return Array.isArray(p)?p:[];};
+  return{articles:pick(j.phsr_v9!==undefined?j.phsr_v9:j.articles),log:pick(j.phsr_log!==undefined?j.phsr_log:j.log)};
+}
+
+async function importBackup(input){
+  const file=input.files&&input.files[0];
+  input.value='';
+  if(!file)return;
+  let backup;
+  try{backup=parseBackup(await file.text());}
+  catch(e){setStatus('Could not read that file — is it a Research explorer backup?');return;}
+  if(!backup.articles.length){setStatus('That backup has no articles in it.');return;}
+
+  const have=new Set(articles.map(a=>a.pmid));
+  const added=backup.articles.filter(a=>a&&a.pmid&&!have.has(a.pmid));
+  const seenLog=new Set(searchLog.map(l=>JSON.stringify(l)));
+  const addedLog=backup.log.filter(l=>!seenLog.has(JSON.stringify(l)));
+  if(!added.length&&!addedLog.length){setStatus('Nothing to import — all '+backup.articles.length+' articles are already here.',false,true);return;}
+
+  articles=articles.concat(added);
+  searchLog=searchLog.concat(addedLog);
+  await save();
+  updateCounts();renderList();renderSearchLog();renderSidebar();
+  setStatus('Imported '+added.length+' articles ('+(backup.articles.length-added.length)+' were already here).',false,true);
 }
 function getApiKey(){try{return localStorage.getItem('ncbi_key')||'';}catch(e){return '';}}
 function saveApiKey(){
@@ -504,7 +625,9 @@ async function doFetch(){
       retstart+=60;if(retstart>300)break;
     }
     if(!collected.length){setStatus('No new articles found — try a different combination.');btn.disabled=false;return;}
-    collected.forEach(a=>articles.unshift(a));
+    // Spread, not a forEach of unshift() — pushing one at a time reverses the batch,
+    // which would put the oldest article of the import at the top of Unread.
+    articles.unshift(...collected);
     const today=new Date();
     searchLog.unshift({
       date:today.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),
@@ -588,6 +711,17 @@ function launchConfetti(){
   setTimeout(()=>{cancelAnimationFrame(raf);canvas.remove();},4000);
 }
 
+// After a status change the article leaves the current tab and the list re-renders
+// underneath the scroll position, leaving you somewhere in the middle of the list.
+// Jump back to the top so the next article to triage is right under the tab bar.
+// Instant, not smooth: the list can be tens of thousands of pixels tall, and
+// animating that distance is either a long wait or an unreadable blur.
+function scrollToListTop(){
+  const tabs=document.querySelector('.tabs');
+  if(!tabs)return;
+  window.scrollTo(0,Math.max(tabs.getBoundingClientRect().top+window.scrollY-12,0));
+}
+
 function setArticleStatus(pmid,s,fromStatus){
   // Gate: Read only accessible from Interested
   if(s==='read'&&fromStatus!=='interested'){
@@ -597,6 +731,7 @@ function setArticleStatus(pmid,s,fromStatus){
   if(s==='read'&&fromStatus==='interested') launchConfetti();
   const a=articles.find(x=>x.pmid===pmid);if(!a)return;
   a.status=s;save();updateCounts();renderList();renderSidebar();
+  scrollToListTop();
 }
 
 function initField(el,pmid,type){
@@ -806,6 +941,7 @@ document.getElementById('sessionIdDisplay').value=getSessionId();
   await loadSaved();
   renderChips();updateCounts();renderList();renderSearchLog();renderSidebar();
   setStatus('');
+  if(loadNotice)setSyncWarn(loadNotice[0],loadNotice[1]);
 })();
 </script>
 </body>
